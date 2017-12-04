@@ -33,7 +33,7 @@ func main() {
 	pkt.Sequence = 34
 	pkt.Message = []byte("test1234")
 
-	msg := pkt.convertToByte()
+	msg := pkt.toBytes()
 
 	_, err = conn.Write(msg)
 	util.CheckError(err)
@@ -47,7 +47,7 @@ func main() {
 	os.Exit(0)
 }
 
-func (i *IcmpPacket)convertToByte() []byte {
+func (i *IcmpPacket) toBytes() []byte {
 	b := []byte{byte(i.Type), byte(i.Code), 0, 0, byte(i.Identifier), byte(i.Identifier >> 8), byte(i.Sequence), byte(i.Sequence >> 8)}
 	if i.Message != nil {
 		b = append(b, i.Message...)
