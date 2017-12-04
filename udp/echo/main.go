@@ -1,8 +1,10 @@
 package main
 
 import (
+	"fmt"
 	"github.com/izolight/go-network-programming/util"
 	"net"
+	"runtime"
 )
 
 // Server that implements the Echo Protocol (RFC 862)
@@ -15,20 +17,23 @@ func main() {
 	conn, err := net.ListenUDP("udp", udpAddr)
 	util.CheckError(err)
 
-	for {
-		handleClient(conn)
+	quit := make(chan struct{})
+	for i := 0; i < runtime.NumCPU(); i++ {
+		go handleClient(conn, quit)
 	}
+	<-quit
 }
 
-func handleClient(conn *net.UDPConn) {
-	var buf [1024]byte
-	for {
-		n, addr, err := conn.ReadFromUDP(buf[0:])
+func handleClient(conn *net.UDPConn, quit chan struct{}) {
+	buf := make([]byte, 1500)
+	err := error(nil)
+	for err == nil {
+		n, addr, err := conn.ReadFromUDP(buf)
 		if err != nil {
-			return
+			continue
 		}
-
 		_, err = conn.WriteToUDP(buf[0:n], addr)
-		util.CheckError(err)
 	}
+	fmt.Println("listener failed - ", err)
+	quit <- struct{}{}
 }

@@ -1,8 +1,10 @@
 package main
 
 import (
+	"fmt"
 	"github.com/izolight/go-network-programming/util"
 	"net"
+	"runtime"
 	"time"
 )
 
@@ -16,20 +18,24 @@ func main() {
 	conn, err := net.ListenUDP("udp", udpAddr)
 	util.CheckError(err)
 
-	for {
-		handleClient(conn)
+	quit := make(chan struct{})
+	for i := 0; i < runtime.NumCPU(); i++ {
+		go handleClient(conn, quit)
 	}
+	<-quit
 }
 
-func handleClient(conn *net.UDPConn) {
-	var buf [1024]byte
-
-	_, addr, err := conn.ReadFromUDP(buf[0:])
-	if err != nil {
-		return
+func handleClient(conn *net.UDPConn, quit chan struct{}) {
+	buf := make([]byte, 1500)
+	err := error(nil)
+	for err == nil {
+		_, addr, err := conn.ReadFromUDP(buf)
+		if err != nil {
+			continue
+		}
+		daytime := time.Now().String()
+		_, err = conn.WriteToUDP([]byte(daytime), addr)
 	}
-
-	daytime := time.Now().String()
-	_, err = conn.WriteToUDP([]byte(daytime), addr)
-	util.CheckError(err)
+	fmt.Println("listener failed - ", err)
+	quit <- struct{}{}
 }
