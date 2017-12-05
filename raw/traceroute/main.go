@@ -1,47 +1,53 @@
 package main
 
 import (
-	"net"
 	"encoding/binary"
-	"syscall"
-	"log"
-	//"fmt"
 	"fmt"
+	"log"
+	"net"
+	"syscall"
 )
 
 // from golan.org/x/net/ipv4/header.go
 type Header struct {
-	Version  int         // protocol version
-	Len      int         // header length
-	TOS      int         // type-of-service
-	TotalLen int         // packet total length
-	ID       int         // identification
-	Flags    int		 // flags
-	FragOff  int         // fragment offset
-	TTL      int         // time-to-live
-	Protocol int         // next protocol
-	Checksum int         // checksum
-	Src      net.IP      // source address
-	Dst      net.IP      // destination address
+	Version  int    // protocol version
+	Len      int    // header length
+	TOS      int    // type-of-service
+	TotalLen int    // packet total length
+	ID       int    // identification
+	Flags    int    // flags
+	FragOff  int    // fragment offset
+	TTL      int    // time-to-live
+	Protocol int    // next protocol
+	Checksum int    // checksum
+	Src      net.IP // source address
+	Dst      net.IP // destination address
 }
 
 type IcmpPacket struct {
-	Type 		int
-	Code		int
-	Checksum	int
-	Identifier 	int
-	Sequence 	int
-	Message 	[]byte
+	Type       int
+	Code       int
+	Checksum   int
+	Identifier int
+	Sequence   int
+	Message    []byte
 }
 
 type IPPacket struct {
-	Header 	Header
-	Data 	IcmpPacket
+	Header Header
+	Data   IcmpPacket
 }
 
 func main() {
-	var err error
-	fd, _ := syscall.Socket(syscall.AF_INET, syscall.SOCK_RAW, syscall.IPPROTO_RAW)
+	rawsock, err := syscall.Socket(syscall.AF_INET, syscall.SOCK_RAW, syscall.IPPROTO_RAW)
+	if err != nil {
+		log.Fatalf("Could not create socket: %s", err)
+
+	}
+	err = syscall.SetsockoptInt(rawsock, syscall.IPPROTO_IP, syscall.IP_HDRINCL, 1)
+	if err != nil {
+		log.Fatalf("Error setting sockopts: %s", err)
+	}
 	addr := syscall.SockaddrInet4{
 		Port: 0,
 		Addr: [4]byte{8, 8, 8, 8},
@@ -54,34 +60,78 @@ func main() {
 
 	p := IPPacket{
 		Header: h,
-		Data: d,
+		Data:   d,
 	}
 
-	for ttl := 1; ttl < 10; ttl++{
+	responses := make([]IPPacket, 20)
+	for ttl := 1; ttl < 20; ttl++ {
 		p.Header.TTL = ttl
 		p.Data.Identifier = ttl
-		err = syscall.Sendto(fd, p.toBytes(), 0, &addr)
+		err = syscall.Sendto(rawsock, p.toBytes(), 0, &addr)
 		if err != nil {
 			log.Fatal("Sendto:", err)
 		}
 
-/*		buf := make([]byte, 500)
-		n, _, err := syscall.Recvfrom(fd, buf, 0)
+		icmpsock, err := syscall.Socket(syscall.AF_INET, syscall.SOCK_RAW, syscall.IPPROTO_ICMP)
+		buf := make([]byte, 500)
+		n, err := syscall.Read(icmpsock, buf)
 		if err != nil {
-			fmt.Println(err)
+			log.Fatalf("Error receiving data: %s", err)
 		}
-		fmt.Println(buf[:n])*/
+		responses[ttl] = fromBytes(buf[:n])
+		fmt.Println(responses[ttl].Header, responses[ttl].Data)
+		//fmt.Println(i)
+		//fmt.Printf("% 02x\n", buf[:n])
 	}
 }
 
 func (h *Header) defaultHeader() {
-	h.Version 	= 4 // ipv4
-	h.Len 		= 5 // default
-	h.TOS		= 0 // best effort
-	h.Flags		= 1 << 1 // don't fragment
-	h.FragOff	= 0
-	h.TTL		= 1
-	h.Protocol	= 1 // icmp
+	h.Version = 4    // ipv4
+	h.Len = 5        // default
+	h.TOS = 0        // best effort
+	h.Flags = 1 << 1 // don't fragment
+	h.FragOff = 0
+	h.TTL = 1
+	h.Protocol = 1 // icmp
+}
+
+func (h Header) String() string {
+	s := fmt.Sprintf("Version: %v, Len: %v, TOS: %v, TotalLen: %v, ID: %v, Flags: %v, FragOffset: %v," +
+		" TTL: %v, Protocol: %v, Checksum: %v, Src: %v, Dst: %v",
+			h.Version, h.Len, h.TOS, h.TotalLen, h.ID, h.Flags, h.FragOff, h.TTL, h.Protocol, h.Checksum, h.Src, h.Dst)
+	return s
+}
+
+func (i IcmpPacket) String() string {
+	s := fmt.Sprintf("Type: %v, Code: %v, Checksum: %v, Identifier: %v, Sequence: %v, Message: %v",
+		i.Type, i.Code, i.Checksum, i.Identifier, i.Sequence, i.Message)
+	return s
+}
+
+func fromBytes(b [] byte) IPPacket{
+	var i IPPacket
+	i.Header.Version = int(b[0] >> 4)
+	i.Header.Len = int(b[0] & 0x0f)
+	i.Header.TOS = int(b[1])
+	i.Header.TotalLen = int(binary.BigEndian.Uint16(b[2:4]))
+	i.Header.ID = int(binary.BigEndian.Uint16(b[4:6]))
+	i.Header.Flags = int(b[7]>>5)
+	b[7] = b[7] & 0x1f
+	i.Header.FragOff = int(binary.BigEndian.Uint16([]byte(b[6:8])))
+	i.Header.TTL = int(b[8])
+	i.Header.Protocol = int(b[9])
+	i.Header.Checksum = int(binary.BigEndian.Uint16(b[10:12]))
+	i.Header.Src = net.IPv4(b[12], b[13], b[14], b[15])
+	i.Header.Dst = net.IPv4(b[16], b[17], b[18], b[19])
+// Works atm for ttl message
+	i.Data.Type = int(b[20])
+	i.Data.Code = int(b[21])
+	i.Data.Checksum = int(binary.LittleEndian.Uint16(b[22:24]))
+	i.Data.Identifier = int(binary.LittleEndian.Uint16(b[52:54]))
+	i.Data.Sequence = int(binary.LittleEndian.Uint16(b[52:54]))
+	//copy(i.Data.Message, b[52:])
+
+	return i
 }
 
 func (i *IcmpPacket) defaultPacket() {
@@ -96,7 +146,7 @@ func (p *IPPacket) toBytes() []byte {
 	data := p.Data.toBytes()
 	p.Header.TotalLen = 20 + len(data)
 	b := make([]byte, p.Header.TotalLen)
-	b[0] = byte(p.Header.Version << 4 | p.Header.Len)
+	b[0] = byte(p.Header.Version<<4 | p.Header.Len)
 	b[1] = byte(p.Header.TOS)
 	b[2] = byte(p.Header.TotalLen)
 	binary.BigEndian.PutUint16(b[2:4], uint16(p.Header.TotalLen))
