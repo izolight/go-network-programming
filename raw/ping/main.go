@@ -17,6 +17,10 @@ type IcmpPacket struct {
 }
 
 func main() {
+	if len(os.Args) != 2 {
+		fmt.Println("Usage ./ping <IP>")
+		os.Exit(1)
+	}
 	addr, err := net.ResolveIPAddr("ip", os.Args[1])
 	if err != nil {
 		fmt.Printf("Can't resolve %s\n", err.Error())
@@ -38,11 +42,12 @@ func main() {
 	_, err = conn.Write(msg)
 	util.CheckError(err)
 
-	_, err = conn.Read(msg[0:])
+	buf := make([]byte, 500)
+	n, err := conn.Read(buf)
 	util.CheckError(err)
 
 	fmt.Println("Got response")
-	fmt.Println(msg)
+	fmt.Printf("% 02x\n",buf[:n])
 
 	os.Exit(0)
 }
