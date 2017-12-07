@@ -6,7 +6,7 @@ import (
 	"log"
 	"net"
 	"syscall"
-	"time"
+//	"time"
 	"os"
 )
 
@@ -51,6 +51,7 @@ func main() {
 	}
 
 	rawsock, err := syscall.Socket(syscall.AF_INET, syscall.SOCK_RAW, syscall.IPPROTO_RAW)
+	defer syscall.Close(rawsock)
 	if err != nil {
 		log.Fatalf("Could not create socket: %s", err)
 
@@ -70,7 +71,7 @@ func main() {
 	data := []byte("test")
 	p := NewPacket(&iph, &icmph, data)
 
-	responses := make(chan Packet, 1)
+	//responses := make(chan Packet, 1)
 	for ttl := 1; ttl < 30; ttl++ {
 		p.IPHeader.TTL = ttl
 		p.ICMPHeader.Identifier = ttl
@@ -83,35 +84,48 @@ func main() {
 		if err != nil {
 			log.Fatal("Sendto:", err)
 		}
-		timeout := time.After(300 * time.Millisecond)
-		go ReceivePacket(ttl, responses)
-		select {
-		case <-timeout:
+		//timeout := time.After(300 * time.Millisecond)
+		//go ReceivePacket(ttl, responses)
+
+		received, err := ReceivePacket(ttl)
+		if err != nil {
 			fmt.Printf("%v\tTimeout\n", ttl)
-		case received := <-responses:
+		} else {
 			fmt.Printf("%v\t%s\n", int(binary.LittleEndian.Uint16(received.Data[24:26])), received.IPHeader.Source)
 			if string(received.IPHeader.Source) == string(p.IPHeader.Destination) {
 				os.Exit(0)
 			}
 		}
+		/*select {
+		case <-timeout:
+			f
+		case received := <-responses:
+
+		}*/
 		//fmt.Println(responses[ttl].Header, responses[ttl].Data)
 		//fmt.Println(i)
 		//fmt.Printf("% 02x\n", buf[:n])
 	}
 }
 
-func ReceivePacket(ttl int, r chan Packet) {
+//func ReceivePacket(ttl int, r chan Packet) {
+func ReceivePacket(ttl int) (Packet, error){
 	icmpsock, err := syscall.Socket(syscall.AF_INET, syscall.SOCK_RAW, syscall.IPPROTO_ICMP)
+	defer syscall.Close(icmpsock)
+	timeout := syscall.NsecToTimeval(1000 * 1000 * 300)
+	syscall.SetsockoptTimeval(icmpsock, syscall.SOL_SOCKET, syscall.SO_RCVTIMEO, &timeout)
 	buf := make([]byte, 500)
-	n, err := syscall.Read(icmpsock, buf)
+	n, _, err := syscall.Recvfrom(icmpsock, buf, 0)
+	var received Packet
 	if err != nil {
-		log.Fatalf("Error receiving data: %s", err)
+		return received, err
 	}
 	// responses[ttl] = fromBytes(buf[:n])
 	//fmt.Println(buf[:n])
-	var received Packet
+
 	received.UnmarshalBinary(buf[:n])
-	r <- received
+	// r <- received
+	return received, nil
 }
 
 func (p Packet) MarshalBinary() ([]byte, error) {
