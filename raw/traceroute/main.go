@@ -6,6 +6,8 @@ import (
 	"log"
 	"net"
 	"syscall"
+	"time"
+	"os"
 )
 
 // from golan.org/x/net/ipv4/header.go
@@ -39,6 +41,15 @@ type Packet struct {
 }
 
 func main() {
+	if len(os.Args) != 2 {
+		fmt.Println("Usage: traceroute <IP>")
+		os.Exit(1)
+	}
+	dest := net.ParseIP(os.Args[1])
+	if dest == nil {
+		log.Fatalf("Invalid ip %s", os.Args[1])
+	}
+
 	rawsock, err := syscall.Socket(syscall.AF_INET, syscall.SOCK_RAW, syscall.IPPROTO_RAW)
 	if err != nil {
 		log.Fatalf("Could not create socket: %s", err)
@@ -50,18 +61,20 @@ func main() {
 	}
 	addr := syscall.SockaddrInet4{
 		Port: 0,
-		Addr: [4]byte{8, 8, 8, 8},
+		Addr: [4]byte{dest[12], dest[13], dest[14], dest[15]},
 	}
 	iph := NewIPHeader()
-	iph.Destination = net.IPv4(addr.Addr[0], addr.Addr[1], addr.Addr[2], addr.Addr[3])
+	iph.Destination = dest
 	icmph := NewICMPHeader()
 
-	p := NewPacket(&iph, &icmph, []byte("test"))
+	data := []byte("test")
+	p := NewPacket(&iph, &icmph, data)
 
-	//responses := make([]Packet, 10)
-	for ttl := 1; ttl < 2; ttl++ {
+	responses := make(chan Packet, 1)
+	for ttl := 1; ttl < 30; ttl++ {
 		p.IPHeader.TTL = ttl
 		p.ICMPHeader.Identifier = ttl
+		p.ICMPHeader.setChecksum(data)
 		payload, err := p.MarshalBinary()
 		if err != nil {
 			log.Fatalf("Error marshalling packet %s", err)
@@ -70,22 +83,36 @@ func main() {
 		if err != nil {
 			log.Fatal("Sendto:", err)
 		}
-
-		icmpsock, err := syscall.Socket(syscall.AF_INET, syscall.SOCK_RAW, syscall.IPPROTO_ICMP)
-		buf := make([]byte, 500)
-		n, err := syscall.Read(icmpsock, buf)
-		if err != nil {
-			log.Fatalf("Error receiving data: %s", err)
+		timeout := time.After(300 * time.Millisecond)
+		go ReceivePacket(ttl, responses)
+		select {
+		case <-timeout:
+			fmt.Printf("%v\tTimeout\n", ttl)
+		case received := <-responses:
+			fmt.Printf("%v\t%s\n", int(binary.LittleEndian.Uint16(received.Data[24:26])), received.IPHeader.Source)
+			if string(received.IPHeader.Source) == string(p.IPHeader.Destination) {
+				os.Exit(0)
+			}
 		}
-		// responses[ttl] = fromBytes(buf[:n])
-		fmt.Println(buf[:n])
 		//fmt.Println(responses[ttl].Header, responses[ttl].Data)
 		//fmt.Println(i)
 		//fmt.Printf("% 02x\n", buf[:n])
 	}
 }
 
-
+func ReceivePacket(ttl int, r chan Packet) {
+	icmpsock, err := syscall.Socket(syscall.AF_INET, syscall.SOCK_RAW, syscall.IPPROTO_ICMP)
+	buf := make([]byte, 500)
+	n, err := syscall.Read(icmpsock, buf)
+	if err != nil {
+		log.Fatalf("Error receiving data: %s", err)
+	}
+	// responses[ttl] = fromBytes(buf[:n])
+	//fmt.Println(buf[:n])
+	var received Packet
+	received.UnmarshalBinary(buf[:n])
+	r <- received
+}
 
 func (p Packet) MarshalBinary() ([]byte, error) {
 	enc := make([]byte, p.IPHeader.TotalLength)
@@ -101,6 +128,14 @@ func (p Packet) MarshalBinary() ([]byte, error) {
 	copy(enc[4*p.IPHeader.IHL:p.IPHeader.IHL*4+8], i)
 	copy(enc[p.IPHeader.IHL*4+8:p.IPHeader.TotalLength], p.Data)
 	return enc, nil
+}
+
+func (p *Packet) UnmarshalBinary(b [] byte) error {
+	p.IPHeader.UnmarshalBinary(b[:20])
+	p.ICMPHeader.UnmarshalBinary(b[20:28])
+	p.Data = b[28:p.IPHeader.TotalLength]
+
+	return nil
 }
 
 func (ih IPHeader) String() string {
@@ -126,6 +161,23 @@ func (ih IPHeader) MarshalBinary() ([]byte, error) {
 	copy(enc[16:20], ih.Destination[12:])
 
 	return enc, nil
+}
+
+func (ih *IPHeader) UnmarshalBinary(b []byte) error {
+	ih.Version = int(b[0] >> 4)
+	ih.IHL = int(b[0] & 0x0f)
+	ih.ToS = int(b[1])
+	ih.TotalLength = int(binary.BigEndian.Uint16(b[2:4]))
+	ih.ID = int(binary.BigEndian.Uint16(b[4:6]))
+	ih.Flags = int(b[6] >> 5)
+	ih.FragmentOffset = int(binary.BigEndian.Uint16(b[6:8]) & 0x1fff)
+	ih.TTL = int(b[8])
+	ih.Protocol = int(b[9])
+	ih.Checksum = int(binary.BigEndian.Uint16(b[10:12]))
+	ih.Source = net.IPv4(b[12], b[13], b[14], b[15])
+	ih.Destination = net.IPv4(b[16], b[17], b[18], b[19])
+
+	return nil
 }
 
 func (ih ICMPHeader) String() string {
@@ -157,16 +209,18 @@ func (ih ICMPHeader) MarshalBinary() ([]byte, error) {
 	return enc, nil
 }
 
+func (ih *ICMPHeader) UnmarshalBinary(b []byte) error {
+	ih.Type = int(b[0])
+	ih.Code = int(b[1])
+	ih.Checksum = int(binary.BigEndian.Uint16(b[2:4]))
+	ih.Identifier = int(binary.BigEndian.Uint16(b[4:6]))
+	ih.Sequence = int(binary.BigEndian.Uint16(b[6:8]))
+
+	return nil
+}
+
 func NewPacket(h *IPHeader, i *ICMPHeader, data []byte) Packet {
-	payload := make([]byte, 8+len(data))
-	ib, err := i.MarshalBinary()
-	if err != nil {
-		log.Fatalf("Error marshaling to bytes: %s", err)
-	}
-	copy(payload[:8], ib)
-	copy(payload[8:], data)
-	checksum := checkSum(payload)
-	i.Checksum = int(checksum)
+
 	h.TotalLength = h.IHL*4 + 8 + len(data)
 
 	return Packet{
@@ -235,4 +289,18 @@ func checkSum(b []byte) uint16 {
 	s = s>>16 + s&0xffff
 	s = s + s>>16
 	return ^uint16(s)
+}
+
+func (ih *ICMPHeader) setChecksum(data []byte) {
+	payload := make([]byte, 8+len(data))
+	b, err := ih.MarshalBinary()
+	b[2] = 0
+	b[3] = 0
+	if err != nil {
+		log.Fatalf("Error marshaling to bytes: %s", err)
+	}
+	copy(payload[:8], b)
+	copy(payload[8:], data)
+	checksum := checkSum(payload)
+	ih.Checksum = int(checksum)
 }
