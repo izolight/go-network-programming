@@ -6,7 +6,6 @@ import (
 	"log"
 	"net"
 	"syscall"
-//	"time"
 	"os"
 )
 
@@ -67,11 +66,9 @@ func main() {
 	iph := NewIPHeader()
 	iph.Destination = dest
 	icmph := NewICMPHeader()
-
 	data := []byte("test")
 	p := NewPacket(&iph, &icmph, data)
 
-	//responses := make(chan Packet, 1)
 	for ttl := 1; ttl < 30; ttl++ {
 		p.IPHeader.TTL = ttl
 		p.ICMPHeader.Identifier = ttl
@@ -80,14 +77,13 @@ func main() {
 		if err != nil {
 			log.Fatalf("Error marshalling packet %s", err)
 		}
+
 		err = syscall.Sendto(rawsock, payload, 0, &addr)
 		if err != nil {
 			log.Fatal("Sendto:", err)
 		}
-		//timeout := time.After(300 * time.Millisecond)
-		//go ReceivePacket(ttl, responses)
 
-		received, err := ReceivePacket(ttl)
+		received, err := ReceivePacket()
 		if err != nil {
 			fmt.Printf("%v\tTimeout\n", ttl)
 		} else {
@@ -96,20 +92,10 @@ func main() {
 				os.Exit(0)
 			}
 		}
-		/*select {
-		case <-timeout:
-			f
-		case received := <-responses:
-
-		}*/
-		//fmt.Println(responses[ttl].Header, responses[ttl].Data)
-		//fmt.Println(i)
-		//fmt.Printf("% 02x\n", buf[:n])
 	}
 }
 
-//func ReceivePacket(ttl int, r chan Packet) {
-func ReceivePacket(ttl int) (Packet, error){
+func ReceivePacket() (Packet, error){
 	icmpsock, err := syscall.Socket(syscall.AF_INET, syscall.SOCK_RAW, syscall.IPPROTO_ICMP)
 	defer syscall.Close(icmpsock)
 	timeout := syscall.NsecToTimeval(1000 * 1000 * 300)
@@ -120,11 +106,7 @@ func ReceivePacket(ttl int) (Packet, error){
 	if err != nil {
 		return received, err
 	}
-	// responses[ttl] = fromBytes(buf[:n])
-	//fmt.Println(buf[:n])
-
 	received.UnmarshalBinary(buf[:n])
-	// r <- received
 	return received, nil
 }
 
@@ -264,32 +246,6 @@ func NewICMPHeader() ICMPHeader {
 		Sequence:   1,
 	}
 }
-
-/*func fromBytes(b [] byte) IPPacket {
-	var i IPPacket
-	i.Header.Version = int(b[0] >> 4)
-	i.Header.Len = int(b[0] & 0x0f)
-	i.Header.TOS = int(b[1])
-	i.Header.TotalLen = int(binary.BigEndian.Uint16(b[2:4]))
-	i.Header.ID = int(binary.BigEndian.Uint16(b[4:6]))
-	i.Header.Flags = int(b[7] >> 5)
-	b[7] = b[7] & 0x1f
-	i.Header.FragOff = int(binary.BigEndian.Uint16([]byte(b[6:8])))
-	i.Header.TTL = int(b[8])
-	i.Header.Protocol = int(b[9])
-	i.Header.Checksum = int(binary.BigEndian.Uint16(b[10:12]))
-	i.Header.Src = net.IPv4(b[12], b[13], b[14], b[15])
-	i.Header.Dst = net.IPv4(b[16], b[17], b[18], b[19])
-	// Works atm for ttl message
-	i.Data.Type = int(b[20])
-	i.Data.Code = int(b[21])
-	i.Data.Checksum = int(binary.LittleEndian.Uint16(b[22:24]))
-	i.Data.Identifier = int(binary.LittleEndian.Uint16(b[52:54]))
-	i.Data.Sequence = int(binary.LittleEndian.Uint16(b[52:54]))
-	//copy(i.Data.Message, b[52:])
-
-	return i
-}*/
 
 func checkSum(b []byte) uint16 {
 	csumcv := len(b) - 1 // checksum coverage
